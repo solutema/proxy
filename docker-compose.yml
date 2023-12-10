@@ -1,0 +1,82 @@
+version: '3'
+
+services:
+  nginx:
+    container_name: ${COMPOSE_PROJECT_NAME}-nginx
+    image: nginx:${NGINX_TAG}
+    ports:
+      - "${IPv4:-0.0.0.0}:${DOCKER_HTTP_:-80}:80"
+      - "${IPv4:-0.0.0.0}:${DOCKER_HTTPS:-443}:443"
+    environment:
+      SSL_POLICY: ${SSL_POLICY:-Mozilla-Intermediate}
+    volumes:
+      - conf:/etc/nginx/conf.d
+      - vhost:/etc/nginx/vhost.d
+      - html:/usr/share/nginx/html
+      - certs:/etc/nginx/certs:ro
+      - cache:/var/cache/nginx
+      - ./my_proxy.conf:/etc/nginx/conf.d/my_proxy.conf:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+    restart: unless-stopped
+    logging:
+      driver: ${NGINX_WEB_LOG_DRIVER:-json-file}
+      options:
+        max-size: ${NGINX_WEB_LOG_MAX_SIZE:-4m}
+        max-file: ${NGINX_WEB_LOG_MAX_FILE:-10}
+
+  docker-gen:
+    container_name: ${COMPOSE_PROJECT_NAME}-docker-gen
+    image: nginxproxy/docker-gen:${DOCKER_GEN_TAG}
+    command: -notify-sighup nginx-proxy -watch /etc/docker-gen/templates/nginx.tmpl /etc/nginx/conf.d/default.conf
+    depends_on:
+      - nginx
+    volumes_from:
+      - nginx
+    volumes:
+      - ./nginx.tmpl:/etc/docker-gen/templates/nginx.tmpl:ro
+      - /var/run/docker.sock:/tmp/docker.sock:ro
+    labels:
+      - "com.github.jrcs.letsencrypt_nginx_proxy_companion.docker_gen"
+    restart: unless-stopped
+    logging:
+      driver: ${NGINX_GEN_LOG_DRIVER:-json-file}
+      options:
+        max-size: ${NGINX_GEN_LOG_MAX_SIZE:-2m}
+        max-file: ${NGINX_GEN_LOG_MAX_FILE:-10}
+
+  acme-companion:
+    container_name: ${COMPOSE_PROJECT_NAME}-acme-companion
+    image: nginxproxy/acme-companion:${ACME_COMPANION_TAG}
+    depends_on:
+      - nginx
+      - docker-gen
+    environment:
+      NGINX_PROXY_CONTAINER: ${COMPOSE_PROJECT_NAME}-nginx
+      NGINX_DOCKER_GEN_CONTAINER: ${COMPOSE_PROJECT_NAME}-docker-gen
+      DEFAULT_EMAIL: ${DEFAULT_EMAIL}
+    volumes_from:
+      - nginx
+    volumes:
+      - certs:/etc/nginx/certs:rw
+      - acme:/etc/acme.sh
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    logging:
+      driver: ${NGINX_LETSENCRYPT_LOG_DRIVER:-json-file}
+      options:
+        max-size: ${NGINX_LETSENCRYPT_LOG_MAX_SIZE:-2m}
+        max-file: ${NGINX_LETSENCRYPT_LOG_MAX_FILE:-10}
+
+volumes:
+  conf:
+  vhost:
+  html:
+  certs:
+  cache:
+  acme:
+
+networks:
+  default:
+    external: true
+    name: ${NETWORK:-proxy}
